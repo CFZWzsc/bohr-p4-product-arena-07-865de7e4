@@ -38,6 +38,16 @@ def line_of(text, pos):
     return text.count("\n", 0, pos) + 1
 
 
+def source_line(text, line, limit=200):
+    """Return the stripped source line for evidence, or None if unavailable."""
+    if not text or not isinstance(line, int) or line < 1:
+        return None
+    rows = text.splitlines()
+    if line > len(rows):
+        return None
+    return rows[line - 1].strip()[:limit] or None
+
+
 def read_text(path):
     try:
         if not os.path.isfile(path) or os.path.getsize(path) > 2 * 1024 * 1024:
@@ -449,9 +459,12 @@ def main():
             "file_inventory": [],
             "template_check": {},
             "patched_tex": None,
+            "change_record": [],
+            "manual_confirmation": [],
         },
         "evidence": [],
         "uncertainty": [],
+        "limitations": [],
         "errors": [],
         "stats": {},
     }
@@ -469,6 +482,7 @@ def main():
     result["case_id"] = case.get("case_id") or case.get("id") or case.get("challenge_id")
     contract = case.get("output_contract")
     files, unreadable = collect_files(case)
+    text_by_name = {item["name"]: item["text"] for item in files}
     tex_files = [f for f in files if f["kind"] == "tex"]
     bib_files = [f for f in files if f["kind"] == "bib"]
 
@@ -526,6 +540,13 @@ def main():
          "action": entry["fix"], "code": entry["code"]}
         for idx, entry in enumerate(errors + warnings)
     ]
+    result["result"]["change_record"] = [
+        {"file": entry["file"], "line": entry["line"], "code": entry["code"],
+         "action": entry["fix"],
+         "before": source_line(text_by_name.get(entry["file"]), entry["line"]),
+         "after": None, "applied": False}
+        for entry in errors + warnings
+    ]
     result["result"]["file_inventory"] = [
         {"name": item["name"], "path": item["path"], "kind": item["kind"],
          "lines": item["text"].count("\n") + 1, "chars": len(item["text"]),
@@ -539,9 +560,24 @@ def main():
         "abstract_present": "begin{abstract}" in main["text"],
         "keywords_present": "\\keywords" in main["text"] or "\\keyword" in main["text"],
     }
+    manual = [{"item": "build_environment",
+               "reason": "TeX distribution, package and font versions are not verified by static analysis; "
+                         "confirm before claiming reproducibility."}]
+    if any(entry["code"] == "template_required_missing" for entry in issues):
+        manual.append({"item": "template_required_fields",
+                       "reason": "Missing title/author/abstract/keywords were reported, not authored; "
+                                 "confirm the intended content with the author."})
+    if not bib_files and any(entry["code"] == "bib_missing" for entry in issues):
+        manual.append({"item": "citation_keys",
+                       "reason": "No .bib was supplied; citation keys remain unverified."})
+    if len(main_candidates) > 1:
+        manual.append({"item": "main_file",
+                       "reason": "Several files declare \\documentclass; confirm the intended root file."})
+    result["result"]["manual_confirmation"] = manual
     result["evidence"] = [
         {"code": entry["code"], "file": entry["file"], "line": entry["line"],
-         "snippet": entry["snippet"] or entry["message"]}
+         "snippet": source_line(text_by_name.get(entry["file"]), entry["line"])
+         or entry["snippet"] or entry["message"]}
         for entry in issues[:120]
     ]
     result["stats"] = {
