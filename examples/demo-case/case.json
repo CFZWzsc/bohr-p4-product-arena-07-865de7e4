@@ -1,0 +1,18 @@
+{
+ "case_id": "demo-product-arena-07-865de7e4",
+ "topic_id": "product-arena-07-865de7e4",
+ "topic_title": "写作13｜LaTeX 写作与编译",
+ "difficulty": 1,
+ "domain": "writing",
+ "task_instruction": "演示用例：读取同目录的 LaTeX 工程与模板材料，给出带原文证据的编译与模板一致性结论，把每条修复建议落到文件、行号与根因，无法从材料判断的部分写入 uncertainties。",
+ "output_contract": {
+  "deliverable": "可在目标模板下继续编辑与编译的 LaTeX 稿件，以及逐条修复/改动记录",
+  "evidence_map": "编译问题、公式、表格、交叉引用、文献键与模板必填项到来源定位的映射",
+  "change_log": "修改动作、原因、人工确认项和未解决问题",
+  "preserved_facts": "命令、环境、标签、引用键、数值与单位不可凭空改变",
+  "case_id": "原样保留"
+ },
+ "evaluation": {
+  "mode": "demo"
+ }
+}
