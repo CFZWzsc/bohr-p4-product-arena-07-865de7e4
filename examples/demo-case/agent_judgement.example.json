@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "阶段 B 的判断文件模板。复制到 /app/work/agent_judgement.json 后按实际材料填写。",
+    "quote 必须是材料里的逐字片段 —— 脚本会逐条校验，找不到就退回。",
+    "case_id 必须与 /input/case.json 里的 case_id 一致。",
+    "本文件是合成示例，段落 id 取自 examples/demo-case/material.md。"
+  ],
+  "case_id": "demo-product-arena-07-865de7e4",
+  "claims": [
+    {
+      "text": "该工程记录了四轮编译命令与 TeX 发行版，可按记录复现构建流程。",
+      "kind": "reported",
+      "evidence": [
+        {
+          "paragraph_id": "P006",
+          "quote": "构建命令为 pdflatex → bibtex → pdflatex → pdflatex，TeX 发行版为 TeX Live 2023。"
+        }
+      ]
+    }
+  ],
+  "answers": [
+    {
+      "question": "该工程能否按记录的环境与轮次复现同一份产物？",
+      "answer": "材料给出了四轮命令与发行版，可据此复现；模板必填项与缺失的文献条目仍需人工补齐后确认。",
+      "evidence": [
+        {
+          "paragraph_id": "P006",
+          "quote": "构建命令为 pdflatex → bibtex → pdflatex → pdflatex，TeX 发行版为 TeX Live 2023。"
+        }
+      ]
+    }
+  ],
+  "deliverable": "（示例）依据材料写成的目标产物正文；实际运行时由执行 Agent 按题面填写。",
+  "contract_fields": {},
+  "uncertainties": [
+    {
+      "kind": "missing_bib_entry",
+      "item": "li2024",
+      "detail": "materials 的 bibliography.bib 只列出 zhang2023，未给出 li2024 条目",
+      "resolution": "已记入待人工确认项，未补造条目"
+    }
+  ]
+}
