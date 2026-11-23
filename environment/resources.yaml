@@ -1,0 +1,103 @@
+# Resource entry point for the evaluator.
+# All paths are relative to the directory that contains SKILL.md.
+skill:
+  name: bohr-writing-latex-compile
+  version: 1.0.0
+  entry: SKILL.md
+  license: MIT
+  challenge_id: product-arena-07-865de7e4
+  title: 写作13｜LaTeX 写作与编译
+  track: academic-writing
+  family: writing
+
+runtime:
+  python: ">=3.10"
+  notes: "Standard library only. No third-party package is required: the bundled scripts parse PDF text layers with a dependency-free parser and fall back to reporting an honest status when no text layer exists."
+  optional_packages: []
+
+resources:
+  - kind: data
+    name: interface-example
+  - kind: document
+    name: execution-contract
+  - kind: tool
+    name: scientific-python
+  - kind: document
+    name: scientific-tools-provenance
+  - kind: tool
+    name: official-deepseek-harness
+  - kind: tool
+    name: pdf-text-tool
+  - kind: tool
+    name: pdf-render-tool
+  - kind: tool
+    name: ocr-tool
+  - kind: tool
+    name: latex-compiler
+  - kind: tool
+    name: office-renderer
+  - kind: tool
+    name: browser-automation
+  - kind: tool
+    name: font-discovery
+
+bundled:
+  scripts:
+    - scripts/sk_entry.py
+    - scripts/sk_base.py
+    - scripts/topic.py
+    - scripts/artifacts.py
+    - scripts/pptxgen.py
+    - scripts/specialize.py
+    - scripts/sk_selftest.py
+  assets:
+    - assets/result-schema.md
+    - assets/contract-aliases.json
+    - assets/policy.json
+  references:
+    - references/evidence-discipline.md
+    - references/contract-handling.md
+    - references/two-phase-workflow.md
+    - references/failure-modes.md
+    - references/artifact-pipeline.md
+  examples:
+    - examples/demo-case
+    - examples/quickstart.md
+
+io:
+  input: /input
+  work: /app/work
+  output: /app/output
+  required_output_files:
+    - result.json
+  review_artefacts:
+    - run-review.md
+  produced_artifacts:
+    - result.json
+    - run-review.md
+    - manuscript.md
+    - change-log.md
+    - evidence-map.json
+    - edit-targets.json
+    - qa-report.json
+    - format-spec-checklist.json
+    - anomaly-report.json
+  entry_script: scripts/sk_entry.py
+  entry_url: skill://scripts/sk_entry.py
+  # 两阶段工作流：脚本取证 → 执行 Agent 判断 → 脚本校验合并。
+  # work_files 由脚本产出或读取，output_files 由执行 Agent 落盘。
+  work_files:
+    - agent_tasks.json
+    - agent_judgement.json
+  workflow:
+    phases: 2
+    stage_1: scripts/sk_entry.py writes /app/output/result.json and /app/work/agent_tasks.json
+    stage_2: the executing agent writes /app/work/agent_judgement.json, then re-runs scripts/sk_entry.py
+    merge_gate: every evidence quote in the judgement file is verified verbatim against the material before it is accepted
+
+constraints:
+  text_files_max: 50
+  per_file_bytes_max: 512000
+  total_bytes_max: 2097152
+  symlinks: false
+  prepared_answers: false
