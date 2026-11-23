@@ -1,104 +1,232 @@
 ---
-name: latex-build-doctor
-description: Use when a case supplies LaTeX source (main .tex plus optional .bib or template files) and asks to make it compile or to explain build failures; statically checks environments, brace balance, labels and cross-references, citation keys against BibTeX entries, table column specs, math mode, template fields and package requirements, then emits a line-anchored fix report plus a reproducible compile plan in /app/output/result.json while preserving case_id and every output_contract field. Deterministic standard library only; never runs a TeX engine or the network.
+name: bohr-writing-latex-compile
+description: 当需要完成 LaTeX 写作与编译任务并产出可复核结果时使用。本题范围：写作13｜LaTeX 写作与编译。题目家族：学术写作（academic-writing）。任务要求：依据固定科研材料完成 LaTeX 源码的写作、修改与编译准备，覆盖编译问题到文件与行号的定位、公式与表格、交叉引用与参考文献、版式与模板必填项的一致性，交付可继续编辑的源码成果，并记录模板版本、宏包与字体版本、编译命令与轮次以支持重复构建；材料未报告的内容明确说明，不能联网补写。输出可编辑的目标产物、事实/证据映射、修改或生成记录和人工确认项；不得虚构材料外事实。产出 result.json，其中包含运行时 output_contract 要求的全部字段与 case_id，每条结论附带原文证据（段落定位 + 短引），无法从材料判断的部分如实写入 uncertainty 而非编造。
 ---
 
-# LaTeX 源码诊断与可重复编译（行号—根因—修复计划）
+# 写作13｜LaTeX 写作与编译
 
-## 用途与适用条件
+## 用途
 
-当输入是一个 LaTeX 工程（主文件、可选子文件、`.bib`、模板说明），需要判断“为什么不编译/为什么引用是问号/为什么表格溢出”，并给出可复核的修复路径时使用。
+本题属于 **academic-writing / writing** 赛道，聚焦 LaTeX 写作与编译。目标能力：在保留原始事实（命令、环境、标签、引用键、数值、单位）的前提下整理与改写 LaTeX 源码，产出可继续编辑的成稿，并给出逐条可核验的来源与修改记录。
 
-适用：单文件或多文件 `.tex`（含 `\documentclass`）；需要把错误定位到**文件 + 行号 + 根因**；需要核对 `\label/\ref`、`\cite/.bib`、表格列数、数学环境、模板必填项；需要给出可重复的编译轮次与依赖说明。
+本题重点关注四个问题：**编译得通**（源码在指定模板与 TeX 发行版下能否按预期轮次编译，问题能否定位到文件、行号与根因）、**改得对**（公式符号与编号、表格数值与列宽、交叉引用与参考文献、版式与模板必填项是否既符合原文意图又符合模板要求）、**交得可用**（交付物是结构清楚、可继续编辑的源码，而不是把 PDF、截图或无法编译的片段当作结果）、**复现得了**（他人按记录中的模板版本、宏包与字体版本、编译命令与轮次能否得到同一份产物）。
 
-不适用：真正调用 TeX 引擎生成 PDF（本 Skill 只做静态诊断与计划）、替作者补写缺失章节、判断论文科学正确性。
+本 Skill 只做确定性的文本取证与结构化整理：不运行 TeX 引擎、不生成 PDF、不联网。材料里没有写明的编译日志、宏包版本或字体信息，一律记入 `uncertainty`，不臆造。
 
-## 输入
+## 任务要求（来自题面）
 
-- `/input/case.json`（必需，`--case` 可覆盖）：读取 `case_id`、`output_contract`、`task`，以及 `main_tex`、`tex`、`latex_source`、`files`、`template`、`bib`、`bibliography` 等字段。
-- `task.md`：读 `/input/task.md` 或 `/app/work/task.md`，缺失不阻塞；其中的字段要求优先于本文件。
-- 文件既可为内联字符串，也可为路径。脚本只读取存在、UTF-8 可解码、≤2MB 的文本；二进制/PDF 登记为未解析。
-- 输出目录 `/app/output`，工作目录 `/app/work`。
+本案例用于“写作 13｜LaTeX 写作与编译”。依据固定科研材料完成指定的 LaTeX 写作、改写、格式或结构化动作，保持事实和来源一致；对材料不足、冲突和需要人工确认的内容明确标注。
 
-## 处理流程
+可选择的方向包括：源码结构与宏包（主文件与子文件划分、导言区组织、宏包加载顺序）；数学公式（多行对齐、编号与引用、符号上下标、单位与变量正斜体）；表格与浮动体（宽表跨页、列宽与对齐、合并单元格、题注与位置约束、三线表）；引用与参考文献（`\cite`/`\ref` 解析与编号、`.bib` 条目对应、样式与排序、多遍编译收敛）；模板适配（期刊、会议或学位论文模板的版式约束、必填项与文件结构）；编译错误与可重复构建（定位并修复错误与警告、稳定编译轮次、说明发行版与宏包字体依赖）。
 
-脚本 `scripts/run_skill.py` 做确定性静态检查；Agent 依据报告改源码并复述编译计划。
+本题可预知的契约键（**实际以运行时 `/input/case.json` 为准**，下表仅供预热）：
 
-1. **工程识别**：区分主文件（含 `\documentclass` 的最长文件）、子文件、`.bib`、模板文件；登记每个文件的行数与 SHA-256。
-2. **环境配对**：栈匹配 `\begin{env}`/`\end{env}`，报告未闭合、错序与多余 `\end`，附行号。
-3. **括号平衡**：统计未转义 `{}`，报告首次深度为负的行与文件末残余深度；忽略 `\{`、`\}` 与注释。
-4. **交叉引用**：`\label` 与 `\ref/\eqref/\autoref/\cref` 求差集，报告未定义引用、重复标签、未被引用的标签。
-5. **文献键**：解析 `\cite{...}`（含多键与可选参数）与 BibTeX `@type{key,`，报告缺失条目、未被引用的条目；无 `.bib` 时明确说明无法核验。
-6. **表格与浮动体**：`tabular` 列格式列数与每行 `&` 数比对；`[H]` 无 `float` 宏包、`table` 未置于浮动体给警告。
-7. **数学模式**：未转义 `$` 奇偶性；`align/equation` 是否含 `&`；`\text` 外中文提示。
-8. **模板必填项**：`\title`、`\author`、`abstract` 环境、`\keywords`；缺失列入 `template_required_missing`，不代写内容。
-9. **可重复构建**：轮次计划（含 bib 时 `pdflatex → bibtex → pdflatex → pdflatex`，否则两遍 `pdflatex`）与 `latexmk -pdf -interaction=nonstopmode` 等价命令；再由源码推断引擎（`fontspec`/CJK 宏包 → `xelatex` 或 `lualatex`，否则 `pdflatex`）与所用 `\usepackage` 清单，版本一律标 `unverified`，不声称已实测。
-10. **合同保留**：见输出契约。
+- `case_id`
+- `deliverable`
+- `evidence_map`
+- `change_log`
+- `preserved_facts`
 
-## 输出契约（字段 → 类型 → 含义/示例）
+## 交付物
 
-写入 `/app/output/result.json`。下表是脚本实际产出的结构；Agent 只需补 `patched_tex`、`build_environment`，并改写 `change_record` 中已落盘的条目。
+result.json（契约齐全）、可编辑 LaTeX 稿件、evidence_map、change_log、格式与模板核对清单、材料缺口自报。
 
-| 字段 | 类型 | 含义 / 示例 |
-|---|---|---|
-| `case_id` | string | 输入原值：`"case-a"` |
-| `status` | string | `success`｜`partial`｜`insufficient_input`｜`failed` |
-| `result.compile_report` | object | `{"errors":[],"warnings":[],"info":[]}` |
-| `result.compile_report.*[]` | object | `{"code":"undefined_ref","severity":"error","file":"main.tex","line":3,"message":"\\ref{fig:one} has no matching \\label","fix":"Add \\label{fig:one}.","snippet":"See Fig.~\\ref{fig:one}."}` |
-| `result.compile_plan` | array[string] | 有序命令，如 `"pdflatex -interaction=nonstopmode -halt-on-error main.tex"` |
-| `result.build_environment` | object | Agent 补：`{"engine":"pdflatex","engine_basis":"no fontspec/CJK package","packages":["amsmath"],"fonts":[],"version_status":"unverified"}` |
-| `result.fix_plan` | array | `{"priority":1,"file":"main.tex","line":3,"action":"...","code":"undefined_ref"}` |
-| `result.file_inventory` | array | `{"name","path","kind","lines","chars","sha256","is_main"}` |
-| `result.template_check` | object | `documentclass_present`/`title_present`/`author_present`/`abstract_present`/`keywords_present` |
-| `result.patched_tex` | string\|null | 修正后 `.tex` 全文，字段名就是 `patched_tex`（不是 `corrected_tex`）；脚本留 `null`，任务要求修改时必须由 Agent 填写 |
-| `result.change_record` | array | `{"file","line","code","action","before","after","applied"}`；`before` 是原文该行，`applied=false` 表示尚未改入源码 |
-| `result.manual_confirmation` | array | `{"item":"citation_keys","reason":"No .bib was supplied; citation keys remain unverified."}` |
-| `evidence` | array | `{"code","file","line","snippet"}`，`snippet` 为原文该行片段，用于逐条复核 |
-| `uncertainty` / `limitations` | array | 不确定性（如 `main_file` 歧义）与边界声明 |
-| `errors` / `stats` | array / object | 运行级错误；文件数与 error/warning/info 计数 |
-| `contract_status` | object | `declared_fields`/`preserved_fields`/`unmapped_fields`/`unsupported_features`/`contract_present` |
+交付物的**内容契约**由运行时 `output_contract` 决定（见下）；下面「交付物落盘要求」给出的是必须真实存在的**文件**。
 
-合同规则：原始 `output_contract` 每个字段名都保留（字典 / 列表 / `fields` / Schema `properties` 均支持）；已识别字段按别名填入，无法映射写 `null` 并登记 `unmapped_fields`，`status` 降为 `partial`。脚本进程始终以 0 结束，诊断看 `status` 与 `contract_status`，不要依赖退出码。
+## 执行方式
 
-## 异常处理
-
-| 情形 | 处置 |
-|---|---|
-| `case.json` 不可读 | `status=failed`，`errors` 记录，不伪造诊断 |
-| 无 `.tex` 源 | `status=insufficient_input`，说明需要源码，不猜内容 |
-| 只有片段、无 `\documentclass` | `status=partial`，按片段检查并标 `fragment_only` |
-| `.bib` 缺失但有 `\cite` | 报 `bib_missing`，不虚构条目 |
-| 多主文件冲突 | 全部登记，按最长文件为默认主文件并标 `main_ambiguous` |
-| 文件超限/非 UTF-8 | 登记 `unreadable`，其余文件继续检查 |
-| 模板类文件缺失 | 报 `template_class_missing`，给出所需 `.cls/.sty` 名称而不是伪造内容 |
-| 宏包未知 | 只提示“需确认发行版是否预装”，不声称已安装 |
-
-## 限制与不适用
-
-- 不运行 `pdflatex/latexmk/xelatex`，不生成或声称生成 PDF。
-- 静态检查不能发现宏展开后才会出现的错误；行号对多文件工程按各文件独立编号。
-- 不判断公式物理含义、不重排参考文献样式、不生成缺失的实验内容。
-- 未读取的模板 PDF 只作为版式参考登记，不臆测约束。
-
-## 最小调用示例（示例）
-
-以下为合成示意，非官方案例，数据为构造。
+入口脚本：`scripts/sk_entry.py`。它会读取 `/input`，产出 `/app/output/result.json`。
 
 ```bash
-python /skills/weekly-skill/scripts/run_skill.py \
-  --case /input/case.json --out /app/output/result.json --work /app/work
+# 在案例环境中执行（Harbor 会自动调用；手动复现同一条命令）
+python /skills/weekly-skill/scripts/sk_entry.py \
+  --input /input --work /app/work --out /app/output
 ```
 
-输出节选（键名与实际运行一致）：
+执行结束后必须存在且可解析：
+
+- `/app/output/result.json` —— 契约字段齐全的最终结果
+- `/app/output/run-review.md` —— 人类可读的证据索引与不确定性清单（复核用）
+
+### 两阶段工作流（重要：脚本只做取证，判断由你做）
+
+脚本是**确定性**的：它读材料、切段落、建证据索引、按契约键名填字段。它**不做**
+领域判断 —— 哪几条陈述才是结论、答案该怎么组织、交付物该说什么，这些必须由你
+（执行 Agent）来做。所以本 Skill 的完整用法是**跑两次**：
+
+```bash
+# 阶段 A：脚本取证，产出结果骨架 + 任务单
+python /skills/weekly-skill/scripts/sk_entry.py \
+  --input /input --work /app/work --out /app/output
+
+# 阶段 B：你读 /app/work/agent_tasks.json，写 /app/work/agent_judgement.json
+
+# 阶段 C：脚本再跑一次，把你的判断校验后合并进 result.json
+python /skills/weekly-skill/scripts/sk_entry.py \
+  --input /input --work /app/work --out /app/output
+```
+
+**阶段 A 之后**，`/app/work/agent_tasks.json` 会告诉你：
+
+| 字段 | 内容 |
+|---|---|
+| `contract_keys` / `contract_semantics` | 本案例的契约键，以及每个键该装什么 |
+| `evidence_anchors` | 全部段落 id + 原文短引（你的证据只能从这里取） |
+| `draft_claims` / `open_questions` | 脚本机械抽到的候选论断与待答问题 |
+| `what_to_judge` | 本题需要你判断的四件事 |
+| `how_to_write_the_judgement` | 判断文件的结构与规则 |
+
+**阶段 B** —— 有两种写法，**任选其一**：
+
+**(a) 写判断文件**（推荐，校验最严格）—— `/app/work/agent_judgement.json`：
 
 ```json
-{"case_id":"synthetic-latex-demo","status":"success","result":{"compile_report":{"errors":[{"code":"undefined_ref","severity":"error","file":"main.tex","line":3,"message":"\\ref{fig:one} has no matching \\label","fix":"Add \\label{fig:one}.","snippet":"See Fig.~\\ref{fig:one}."}]},"compile_plan":["pdflatex -interaction=nonstopmode -halt-on-error main.tex","pdflatex -interaction=nonstopmode -halt-on-error main.tex"],"patched_tex":null,"change_record":[{"file":"main.tex","line":3,"code":"undefined_ref","before":"See Fig.~\\ref{fig:one}.","after":null,"applied":false}],"manual_confirmation":[{"item":"build_environment","reason":"versions unverified"}]},"evidence":[{"code":"undefined_ref","file":"main.tex","line":3,"snippet":"See Fig.~\\ref{fig:one}."}],"contract_status":{"unmapped_fields":[]}}
+{
+  "case_id": "必须与 case.json 一致",
+  "claims": [
+    {"text": "你判断为结论的陈述",
+     "evidence": [{"paragraph_id": "P002", "quote": "原文里逐字出现的片段"}]}
+  ],
+  "answers": [
+    {"question": "被问的问题", "answer": "你的回答",
+     "evidence": [{"paragraph_id": "P002", "quote": "原文里逐字出现的片段"}]}
+  ],
+  "deliverable": "本题最终交付物的正文",
+  "contract_fields": {"契约键名": "该键的内容（可选，直接填契约键）"},
+  "uncertainties": [
+    {"kind": "machine_readable_category", "item": "具体对象",
+     "detail": "客观描述", "resolution": "你做了什么或为何无法继续"}
+  ]
+}
 ```
 
-## 交付顺序与自检
+**(b) 直接写 `/app/output/result.json`** —— 也支持，脚本会把你写进去的契约键
+**取出来**（先留底，再合并），同样过引文校验。你的 `result.json` 不会被覆盖。
 
-1. `python scripts/run_skill.py --case <输入> --out <输出>`（`--output` 等价；默认 `/input/case.json` → `/app/output/result.json`）。
-2. 脚本只给诊断骨架。任务要求修复时，Agent 必须把修正后的完整 `.tex` 写入 `result.patched_tex`，在 `result.change_record` 逐条补 `after` 并置 `applied=true`，再补 `result.build_environment`；不得停在“仅诊断”。
-3. 自检：`case_id` 与输入一致；`output_contract` 每字段存在；无 `pending`/`TODO`/空占位；每条 error/warning 有文件+行号+根因+修复；未定义 `\ref` 与缺失 `\cite` 键分列；含 `.bib` 的轮次含 bibtex；未声称已编译或生成 PDF；未联网。
+> 两种写法都会被采纳；**不要**两个都不做 —— 那就只剩机械抽取，`status` 停在 `partial`。
 
-评分对应：实际效果看可编辑 `.tex` 成品与逐条修复记录；使用增益看文件+行号+根因是否减少试编译；创新看错误分类与修复闭环；可靠体验看异常降级与重复运行一致性；生态贡献看调用说明、示例与自查清单。
+**阶段 C 的校验闸门（脚本强制执行）**：
+
+- 每条 `quote` 必须能在材料原文里**逐字找回**（允许空白差异）—— 找不到就**退回**，
+  并把退回理由写进 `uncertainty`；
+- 每条 claim / answer 必须至少有一个证据锚点 —— 没有锚点的条目被退回；
+- `contract_fields` 的值不能是 `null` 或空容器 —— 空值被退回；
+- 被退回的条目**不会**进入最终结果，脚本保留自己的确定性抽取作为兜底。
+
+> 判断可以自由，**证据不可以自由**。这条闸门是本 Skill 的可信度基础。
+
+只有完成阶段 B，脚本才会把 `status` 从 `partial` 升到 `answered`；否则结果里的
+`uncertainty` 会保留一条 `judgement_pending`，如实说明"只做了机械抽取，尚未判断"。
+
+### 脚本职责
+
+| 脚本 | 职责 |
+|---|---|
+| `scripts/sk_entry.py` | 入口：定位输入、发现材料、执行 `topic.run()`、装配 `result.json`、自检并写复核产物 |
+| `scripts/sk_base.py` | 公共库：契约解析、材料发现、证据构造、结果装配、自检工具 |
+| `scripts/topic.py` | 题目逻辑：读材料 → 建证据索引 → 按契约键名语义产出字段 → 校验并合并你的判断 |
+| `scripts/specialize.py` | reading / writing 引擎：逐 `field_id` 抽取（四态状态）；可编辑稿件 + 改动记录 + 来源映射 |
+| `scripts/artifacts.py` | graphics 引擎：实体—连接—步骤 IR → 分层 SVG → 渲染 PNG + 来源记录 |
+| `scripts/pptxgen.py` | slides 引擎：stdlib-only 真实 PPTX + 逐页 SVG/PNG + 独立讲稿备注 |
+
+**这些引擎会真的写文件。** 每条赛道具体落盘哪些文件、每个文件里有什么、
+如何回挂到契约键，见 `references/artifact-pipeline.md`。
+
+### 运行时契约是唯一权威
+
+`output_contract` **只在运行时可见**（`/input/case.json`）。
+不要硬编码任何字段名，也不要凭题面示例臆造字段：
+
+1. 读取 `/input/case.json` 的 `output_contract`；
+2. 对每个契约键，按**键名语义**判断它应该承载什么（证据 / 结论 / 不确定性 /
+   交付物 / 覆盖度 / 变更记录 …）；
+3. 产出对应内容，**不允许**留下 `null` 或"未产出"占位；
+4. 若该键确实无法从材料得出，填入结构化的"无法判断"条目（带 `kind`、`item`、
+   `detail`、`resolution`），而不是留空。
+
+## 交付物落盘要求
+
+除 `result.json` 外，**可编辑的交付物源文件与其渲染预览必须真实存在**：
+
+| 赛道 | 必须落到 `/app/output` 的文件 |
+|---|---|
+| writing | `result.json`（契约齐全的结构化结果） |
+| writing | `manuscript.md` —— 真实可编辑稿件，章节结构取自材料自身标题 |
+| writing | `change-log.md` —— 逐条 before/after 改动记录 + 锚点守恒检查 |
+| writing | `evidence-map.json` —— 章节 → 段落 / 锚点的来源映射，含**逐条锚点定位**（文件 + 行号 + 段落 id + 原文短引）与关键论断清单 |
+| writing | `edit-targets.json` —— 逐条编辑目标回执（若提供 workorder） |
+| writing | `qa-report.json` —— 逐节锚点守恒统计 + edit-target 状态 + 人工待核清单 |
+| writing | `format-spec-checklist.json` —— 格式规格逐项核对清单：栏数 / 字号 / 行距 / 页边距 / 标题层级 / 图表题注 / 参考文献样式 / 导出格式等，附出处文件、行号与原文短引；材料未写明的记为缺失 |
+| writing | `anomaly-report.json` —— 材料缺口与异常自报：格式规格缺失 / 冲突、锚点守恒异常、待人工确认项 |
+
+平台提供的 `office-renderer` / `pdf-render-tool` / `latex-compiler` 可用来渲染预览。
+**只有规格描述、没有真实文件，等于没交付** —— 评审要打开文件看。
+
+### 导出前合规检查（pre-export compliance）
+
+导出件落盘后，本 Skill 会**自动核对**并在 `*-export-checks.json` 里留档，
+让评审不必逐个打开文件猜：
+
+| 检查维度 | 记什么 |
+|---|---|
+| 目标格式 | 期望的 SVG / PNG / PDF 是否齐全、各自字节数、是否是**真矢量** |
+| 画布与分辨率 | 像素尺寸 → pt → mm 换算，实测 dpi，目标 dpi |
+| 字体 | 字体清单、嵌入情况、中文回退策略、是否存在方框/缺字风险 |
+| 色彩空间 | 色彩空间标注（sRGB 等）与是否有嵌入配置 |
+| 线宽 / 分层 | 线宽是否过细、图层是否可拆、图层清单 |
+| 数据一致性 | 图上出现的数值与源数据表的比对结果 |
+| 讲稿隔离 | 备注文字是否混进页面文字（逐页最大重叠片段） |
+| 人工确认 | 需人眼确认的项一律标 `pending_human_review`，**不代签** |
+
+失败的检查项会**原样保留为 fail**，不会被改写成通过；不可用的工具（如运行时
+没有矢量转换器或 LibreOffice）也如实记为 `unavailable`，不做假成功。
+
+## 质量红线
+
+- LaTeX 源码中的每条命令、环境、标签、引用键、数值与单位在整理后**逐字保持**
+- 编译问题必须能指回材料中写明的文件、行号与原文片段；材料没有给出日志或错误信息时不臆测
+- 模板必填项、宏包、字体与编译轮次**逐项**从材料与题面抽取并附出处；材料没写的维度如实记为缺失
+- 不以 PDF、截图或无法编译的片段替代可编辑源码；不声称已经运行过 TeX 引擎或生成过 PDF
+- 公式符号、表格列规格与交叉引用编号的改动必须在 `change_log` 里给出 before/after 与依据
+
+通用红线（违反即失分）：
+
+- **不编造**：材料没有的数字、引用、图表、方法、结论，一律不写。写不出来就进
+  `uncertainty`，并在 `status_reason` 里说明。
+- **可回溯**：每条结论必须能指回原文的段落 id 与短引；引文必须是原文片段，
+  不做改写、不做拼接。
+- **不提前交卷**：材料可能读不全。若只读到部分文件，`status` 应为 `partial`，
+  并在 `coverage.not_read` 写明未读的部分。
+- **不自评**：不要在结果里写"质量良好""得分很高"这类自评语句。
+
+## 失败与边界
+
+| 情况 | 正确处理 |
+|---|---|
+| 材料是扫描件、无文本层 | 用 `scripts/sk_base.py` 的 PDF 解析；仍无文本则 `status=unsupported` 并在 `uncertainty` 写明"无文本层" |
+| 材料是图片/图表 | 用平台提供的 `pdf-render-tool` / `ocr-tool`；OCR 结果标注为推断 |
+| 材料格式未知 | 记录文件路径与可读性，不猜测内容 |
+| 契约键无法解读 | 产出该键的结构化说明而非空值，并记录在 `uncertainty` |
+
+详见 `references/failure-modes.md` 与 `references/evidence-discipline.md`。
+
+## 自检
+
+`result.json` 写完后由 `scripts/sk_entry.py` 自动自检（结构、契约覆盖、
+证据完整性）。自检失败时以 `partial` 提交并在 `status_reason` 写明原因，
+不要伪造 `answered`。
+
+```bash
+python /skills/weekly-skill/scripts/sk_selftest.py --input /input
+```
+
+## 参考
+
+- `references/evidence-discipline.md` —— 证据与不确定性纪律
+- `references/contract-handling.md` —— 运行时契约的读法与字段语义表
+- `references/two-phase-workflow.md` —— 两阶段工作流协议与校验闸门
+- `references/failure-modes.md` —— 常见失败模式与正确退路
+- `references/artifact-pipeline.md` —— 每条赛道真实落盘哪些文件、怎么回挂契约键
+- `assets/result-schema.md` —— `result.json` 的字段说明
+- `assets/policy.json` —— 不编造承诺与来源声明
+- `examples/demo-case/` —— 一个可离线复现的最小案例
