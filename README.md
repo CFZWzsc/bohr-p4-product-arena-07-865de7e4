@@ -2,9 +2,9 @@
 
 本题：写作13｜LaTeX 写作与编译（product-arena-07-865de7e4，赛道 writing）。
 
-能力定位：在保留原始命令、环境、标签、引用键与数值的前提下整理 LaTeX 源码，产出可继续编辑的成稿，并给出逐条可核验的来源与修改记录
+能力定位：依据材料生成可编译 LaTeX 工程（主文件 + 分节 + 参考文献），尝试本机引擎编译并记录命令与结果；材料无文献条目时 bib 留空不编造。
 
-交付物：result.json（契约齐全）、可编辑 LaTeX 稿件、evidence_map、change_log
+交付物：main.tex、sections/sec-*.tex、references.bib、latex-manifest.json、compile-status.json（有引擎时 main.pdf）
 
 
 ## 这个 Skill 做什么
