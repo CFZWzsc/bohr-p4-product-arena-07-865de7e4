@@ -50,6 +50,12 @@ try:
 except Exception:  # noqa: BLE001
     SP = None
 
+# 赛题专用交付物生成器（按 skill_profile.json 的 task 键分派，见 scripts/taskgen.py）
+try:
+    import taskgen as TG
+except Exception:  # noqa: BLE001
+    TG = None
+
 SKILL_NAME = "research-material-structured-extraction"
 SKILL_VERSION = "1.2.0"
 
@@ -1666,12 +1672,18 @@ def _produce_writing_artifacts(case: dict[str, Any],
 def _produce_artifacts(family: str, case: dict[str, Any],
                        paras: list[dict[str, Any]], records: list[dict[str, Any]],
                        out_dir: str | None,
-                       input_dir: str = "") -> dict[str, Any]:
+                       input_dir: str = "", profile_task: str = "") -> dict[str, Any]:
     """生成**真实**交付物（四个赛道各有各的产物），返回可并入语义池的内容。
 
     没有 out_dir（理论上不会出现）或模块缺失时，返回空字典并说明原因 ——
     绝不谎称已经产出文件。
     """
+    # 赛题专用交付物：一次调用直接写出题面要求的文件（规格见 scripts/taskgen.py）。
+    # 返回 None 表示生成器不可用或失败，回退到家族通用逻辑，绝不阻断入口。
+    if profile_task and TG is not None and out_dir:
+        task_out = TG.build(profile_task, case, paras, records, out_dir, input_dir)
+        if task_out:
+            return task_out
     if family == "reading":
         return _produce_reading_artifacts(case, paras, records, input_dir, out_dir)
     if family == "writing":
@@ -1883,6 +1895,8 @@ def _merge_artifacts(sem: dict[str, Any], produced: dict[str, Any]) -> None:
         sem["editable_sources"] = produced["editable_sources"]
     if produced.get("exports"):
         sem["exports"] = produced["exports"]
+    if produced.get("references") is not None:
+        sem["references"] = produced["references"]
     if produced.get("change_log"):
         sem["change_log"] = list(sem.get("change_log") or []) + produced["change_log"]
     if produced.get("compliance_checks"):
@@ -2413,10 +2427,13 @@ def run(state: dict[str, Any], work_dir: str) -> tuple[str, str, dict[str, Any],
     # 契约里的「可编辑源文件」「导出件」「来源与修改记录」必须指向
     # **磁盘上真实存在**的文件，而不是一句描述。生成失败时如实记入
     # uncertainty，绝不谎称已产出。
+    profile_task = str((state.get("skill_profile") or {}).get("task") or "")
     produced = _produce_artifacts(family, case, paras, records,
                                   state.get("out_dir"),
-                                  state.get("input_dir") or "")
+                                  state.get("input_dir") or "",
+                                  profile_task)
     _merge_artifacts(sem, produced)
+    task_deliverable = bool(produced.get("deliverable_patch")) and not produced.get("_error")
 
     # --- 阶段 C：合并执行 Agent 的领域判断 --------------------------------
     # 脚本只做机械抽取，题面要的实质判断由执行 Agent 做。
@@ -2546,6 +2563,16 @@ def run(state: dict[str, Any], work_dir: str) -> tuple[str, str, dict[str, Any],
             if records:
                 status = "answered"
                 reason = derived_reason
+        if task_deliverable and records:
+            # 题面交付物已在**本次运行**内落盘，判断不再推迟到下一个 Agent 回合。
+            status = "answered"
+            reason = ("材料已读取，并按题面要求在一次运行内生成了真实交付物"
+                      "（见 deliverable / editable_sources / exports）；"
+                      "无法从材料推出的项已逐条记入 uncertainty")
+            sem["uncertainty"] = [
+                u for u in sem["uncertainty"]
+                if not (isinstance(u, dict) and u.get("kind") == "judgement_pending")
+            ]
     if rejected:
         sem["uncertainty"].extend(rejected)
         sem["quality"]["judgement_entries_rejected"] = len(rejected)
@@ -2628,6 +2655,7 @@ def run(state: dict[str, Any], work_dir: str) -> tuple[str, str, dict[str, Any],
     # 复核者需要直接看到「本 Skill 自己做出了哪些判断」。
     canonical["claims"] = sem.get("claims") or []
     canonical["answers"] = sem.get("answers") or []
+    canonical["references"] = sem.get("references") or []
     # 写作 / 阅读类的清单即使不是契约键也要置顶，否则评审在 result.json
     # 里看不到术语表、符号表、结论清单与章节预算。
     if family in ("reading", "writing"):
@@ -2644,7 +2672,7 @@ def run(state: dict[str, Any], work_dir: str) -> tuple[str, str, dict[str, Any],
         canonical["target_fields"] = sem["target_fields"]
 
     extra = {"contract_semantics": {k: classify_key(k) for k in contract},
-             "family": family}
+             "family": family, "task": profile_task or ""}
     return status, reason, canonical, extra
 
 
