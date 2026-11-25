@@ -3,5 +3,6 @@
  "track": "writing",
  "family": "writing",
  "title": "写作13｜LaTeX 写作与编译",
- "skill_name": "bohr-writing-latex-compile"
+ "skill_name": "bohr-writing-latex-compile",
+ "task": "latex"
 }
