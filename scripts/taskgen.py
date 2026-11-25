@@ -84,17 +84,26 @@ def _sentences(text: str) -> list[str]:
     return out
 
 
+_BOILER = ("合成示例", "离线演练", "synthetic demo", "demo file", "仅供演示",
+           "仅用于演示", "synthetic and is used only")
+
+
 def _sentence_index(paras: list[dict]) -> list[dict]:
     idx: list[dict] = []
     for p in paras:
-        for s in _sentences(p.get("text") or ""):
-            if s.lstrip().startswith("#"):  # 标题行不是可引用陈述
+        raw = str(p.get("text") or "").replace("\r", "")
+        # 先按行拆：标题行整行丢弃，正文行再做分句，避免“标题+正文”被当成标题跳过
+        for line in raw.split("\n"):
+            if line.lstrip().startswith("#"):
                 continue
-            idx.append({
-                "paragraph_id": str(p.get("paragraph_id") or ""),
-                "source_id": str(p.get("source_id") or ""),
-                "text": s,
-            })
+            for s in _sentences(line):
+                if _has_any(s, _BOILER):  # 示例自述句不是材料事实
+                    continue
+                idx.append({
+                    "paragraph_id": str(p.get("paragraph_id") or ""),
+                    "source_id": str(p.get("source_id") or ""),
+                    "text": s,
+                })
     return idx
 
 
@@ -265,6 +274,16 @@ def _finish(out_dir: str, case: dict, task: str, files: list, emap: list,
     patch.setdefault("instruction_echo",
                      _flat(case.get("task_instruction") or "")[:400])
     out = {
+        "diagnostics": {
+            "artifacts": len(files),
+            "checks_total": len(checks),
+            "checks_passed": sum(1 for c in checks if c.get("status") == "pass"),
+            "failed_checks": [c.get("check_id") for c in checks
+                              if c.get("status") != "pass"],
+            "quote_entries": len(emap),
+            "uncertainty_items": len(unc),
+            "self_verdict": _verdict(checks),
+        },
         "editable_sources": files,
         "exports": patch.pop("_exports", None) or [{
             "export_id": f"{task}_deliverables",
@@ -1728,8 +1747,14 @@ def _t_results_discussion(case, paras, records, out_dir, input_dir) -> dict:
     disc = _pick(idx, DISCUSS_KW, 10)
     limits = _pick(idx, LIMIT_KW, 5)
 
+    seen_sent: set[str] = set()
+
     def emit(items, label, target):
         for it in items:
+            key = it["text"].strip()
+            if key in seen_sent:  # 同一句不在多节重复
+                continue
+            seen_sent.add(key)
             a = _anchor(it["text"], idx)
             emap.append({"claim_id": f"{label}{len(emap)+1}", "section": target,
                          "paragraph_id": a["paragraph_id"],
@@ -1758,13 +1783,28 @@ def _t_results_discussion(case, paras, records, out_dir, input_dir) -> dict:
     _write(out_dir, "results.md", "\n".join(md), "md", "deliverable", files)
 
     dd = ["# 讨论", "", "解释、对照、机制与局限均以材料陈述为界。", "", "## 解释", ""]
-    dd += [p + "\n" for p in emit(disc[:6], "D", "解释")]
+    if disc:
+        dd += [p + "\n" for p in emit(disc[:6], "D", "解释")]
+    else:
+        dd.append("材料未给出对结果的解释（not_reported_in_materials）；本节不作推断。\n")
+        unc.append({"kind": "interpretation_not_reported", "item": "解释",
+                    "detail": "材料无解释性陈述", "resolution": "不引入材料外机制"})
     dd += ["## 对照", ""]
-    dd += [p + "\n" for p in emit(_pick(idx, ("相比", "compared", "对照", "而 "), 4),
-                                  "C", "对照")]
+    comp = _pick(idx, ("相比", "compared", "对照", "而 ", "高于", "低于", "差异"), 4)
+    if comp:
+        dd += [p + "\n" for p in emit(comp, "C", "对照")]
+    else:
+        dd.append("材料未给出与基线或既往结果的对照（not_reported_in_materials）。\n")
+        unc.append({"kind": "comparison_not_reported", "item": "对照",
+                    "detail": "材料无对照陈述", "resolution": "结论不外推为相对优势"})
     dd += ["## 机制", ""]
-    dd += [p + "\n" for p in emit(_pick(idx, ("机制", "由于", "because", "mechanism",
-                                              "attributed"), 4), "M", "机制")]
+    mech = _pick(idx, ("机制", "由于", "because", "mechanism", "attributed"), 4)
+    if mech:
+        dd += [p + "\n" for p in emit(mech, "M", "机制")]
+    else:
+        dd.append("材料未给出机制解释（not_reported_in_materials）；只保留相关性表述。\n")
+        unc.append({"kind": "mechanism_not_reported", "item": "机制",
+                    "detail": "材料无机制陈述", "resolution": "不补写机制假设"})
     dd += ["## 局限", ""]
     dd += [p + "\n" for p in emit(limits, "L", "局限")]
     if not limits:
@@ -2301,15 +2341,20 @@ def _t_intro(case, paras, records, out_dir, input_dir) -> dict:
 # ---------------------------------------------------------------------------
 
 CONFIG_ITEMS = [
-    ("task_definition", "任务定义", ("任务", "task", "目标函数", "objective")),
-    ("dataset", "数据集", ("数据", "dataset", "样本", "材料", "sample")),
-    ("model", "模型结构", ("模型", "model", "网络", "架构", "architecture")),
-    ("training_setup", "训练配置", ("训练", "优化器", "learning rate", "学习率", "epoch")),
-    ("hyperparameters", "超参数", ("batch", "学习率", "learning rate", "层数", "维度")),
-    ("evaluation", "评测协议", ("评测", "指标", "metric", "accuracy", "误差")),
-    ("baselines", "基线对比", ("基线", "baseline", "对比方法", "compared with")),
+    ("task_definition", "任务定义", ("任务定义", "任务目标", "目标函数", "objective")),
+    ("dataset", "数据集", ("数据集", "dataset", "划分", "样本", "sample")),
+    ("model", "模型结构", ("模型结构", "网络结构", "架构", "architecture",
+                           "backbone", "模型采用", "model consists")),
+    ("training_setup", "训练配置", ("训练", "batch", "优化器", "learning rate",
+                                    "学习率", "epoch")),
+    ("hyperparameters", "超参数", ("超参数", "batch", "学习率", "learning rate",
+                                   "层数", "维度", "dropout")),
+    ("evaluation", "评测协议", ("评测", "评价指标", "指标", "metric", "accuracy",
+                                "Top-1", "F1", "误差")),
+    ("baselines", "基线对比", ("基线", "baseline", "对比方法", "compared with",
+                               "对照实验")),
     ("reproducibility", "可复现性", ("随机种子", "seed", "重复", "repeat", "三次")),
-    ("compute", "计算资源", ("GPU", "CPU", "显存", "算力", "硬件")),
+    ("compute", "计算资源", ("GPU", "A100", "显存", "算力", "硬件")),
     ("ethics", "伦理与合规", ("伦理", "知情同意", "ethic", "consent")),
 ]
 
@@ -2348,7 +2393,8 @@ def _t_methods(case, paras, records, out_dir, input_dir) -> dict:
                                                        CONFIG_ITEMS[2][2])),
                    "材料未报告模型结构（not_reported_in_materials）。"))
     md += ["", "## 训练配置", ""]
-    found_train = [i["text"] for i in idx if _has_any(i["text"], CONFIG_ITEMS[3][2])]
+    found_train = [i["text"] for i in idx if _has_any(i["text"], CONFIG_ITEMS[3][2])
+                   and not _has_any(i["text"], ("基线", "划分", "测试集"))]
     md.append("\n\n".join(found_train) if found_train else
               "材料未报告训练配置（not_reported_in_materials）。")
     md += ["", "## 评测", ""]
