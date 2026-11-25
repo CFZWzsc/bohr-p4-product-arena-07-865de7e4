@@ -273,17 +273,17 @@ def _finish(out_dir: str, case: dict, task: str, files: list, emap: list,
     patch.setdefault("primary_files", primary)
     patch.setdefault("instruction_echo",
                      _flat(case.get("task_instruction") or "")[:400])
+    patch.setdefault("diagnostics", {
+        "artifacts": len(files),
+        "checks_total": len(checks),
+        "checks_passed": sum(1 for c in checks if c.get("status") == "pass"),
+        "failed_checks": [c.get("check_id") for c in checks
+                          if c.get("status") != "pass"],
+        "quote_entries": len(emap),
+        "uncertainty_items": len(unc),
+        "self_verdict": _verdict(checks),
+    })
     out = {
-        "diagnostics": {
-            "artifacts": len(files),
-            "checks_total": len(checks),
-            "checks_passed": sum(1 for c in checks if c.get("status") == "pass"),
-            "failed_checks": [c.get("check_id") for c in checks
-                              if c.get("status") != "pass"],
-            "quote_entries": len(emap),
-            "uncertainty_items": len(unc),
-            "self_verdict": _verdict(checks),
-        },
         "editable_sources": files,
         "exports": patch.pop("_exports", None) or [{
             "export_id": f"{task}_deliverables",
@@ -1272,6 +1272,21 @@ def _t_format_docx(case, paras, records, out_dir, input_dir) -> dict:
         ("paragraph_indent", "首行缩进 2 字符", ("首行缩进", "indent")),
         ("export_format", "docx", ("docx", "Word", "可编辑")),
     ]
+    mechanism = {
+        "body_font_east_asian": "styles.xml docDefaults: w:rFonts/@w:eastAsia=宋体",
+        "body_font_latin": "styles.xml docDefaults: w:rFonts/@w:ascii=Times New Roman",
+        "body_font_size": "styles.xml docDefaults: w:sz=24（12pt）",
+        "line_spacing": "Normal 段: w:spacing/@w:line=360 lineRule=auto（1.5 倍）",
+        "margin": "sectPr: w:pgMar 四边 1440 twips（2.54cm）",
+        "heading_1": "w:pStyle Heading1（b + sz 32，outlineLvl 0）",
+        "heading_2": "w:pStyle Heading2（b + sz 28，outlineLvl 1）",
+        "heading_3": "w:pStyle Heading3（b + sz 24，outlineLvl 2）",
+        "figure_caption": "w:pStyle Caption（jc=center，sz 21）",
+        "table_caption": "w:pStyle Caption（jc=center，sz 21）",
+        "reference_style": "参考文献条目按原文 [n] 顺序保留，不重排编号",
+        "paragraph_indent": "正文段 w:ind/@w:firstLineChars=200（首行缩进 2 字符）",
+        "export_format": "OOXML 包（[Content_Types].xml + word/document.xml + styles.xml）",
+    }
     rows = []
     for dim, default, kws in spec_dims:
         found = ""
@@ -1282,6 +1297,7 @@ def _t_format_docx(case, paras, records, out_dir, input_dir) -> dict:
         rows.append({"dimension": dim, "adopted": default if not found else found,
                      "basis": ("task_statement" if found else
                                "template_default_not_stated_in_task"),
+                     "applied_mechanism": mechanism.get(dim, ""),
                      "quote": found})
         if not found:
             unc.append({"kind": "format_spec_not_stated", "item": dim,
@@ -1295,13 +1311,26 @@ def _t_format_docx(case, paras, records, out_dir, input_dir) -> dict:
             continue
         lines = txt.splitlines()
         first = lines[0].strip()
-        if first.startswith("#") or (len(first) <= 40 and len(lines) > 1):
-            body.append(("h1", first.lstrip("# ").strip(), p))
+        if first.startswith("#"):
+            level = min(3, max(1, len(first) - len(first.lstrip("#"))))
+            body.append((f"h{level}", first.lstrip("# ").strip(), p))
+            rest = "\n".join(lines[1:]).strip()
+            if rest:
+                body.append(("p", _flat(rest), p))
+        elif len(first) <= 40 and len(lines) > 1:
+            body.append(("h1", first, p))
             rest = "\n".join(lines[1:]).strip()
             if rest:
                 body.append(("p", _flat(rest), p))
         else:
-            body.append(("p", _flat(txt), p))
+            for line in lines:
+                s = line.strip()
+                if not s:
+                    continue
+                if re.match(r"^(图|表|Figure|Table)\s*[0-9０-９N]", s):
+                    body.append(("cap", s, p))
+                else:
+                    body.append(("p", _flat(s), p))
     if not body:
         body = [("p", "材料为空；无可转换正文（not_reported_in_materials）。", {})]
 
@@ -1311,13 +1340,23 @@ def _t_format_docx(case, paras, records, out_dir, input_dir) -> dict:
         return f'<w:r>{rpr}<w:t xml:space="preserve">{_xml_escape(text)}</w:t></w:r>'
 
     ps = []
+    used_styles = {k: 0 for k in ("Heading1", "Heading2", "Heading3", "Caption",
+                                  "Normal")}
     for kind, text, p in body:
         pid = (p or {}).get("paragraph_id", "")
-        if kind == "h1":
-            ps.append('<w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr>'
+        if kind.startswith("h"):
+            style = "Heading" + kind[1:]
+            used_styles[style] += 1
+            ps.append(f'<w:p><w:pPr><w:pStyle w:val="{style}"/></w:pPr>'
                       + run(text, True) + "</w:p>")
+        elif kind == "cap":
+            used_styles["Caption"] += 1
+            ps.append('<w:p><w:pPr><w:pStyle w:val="Caption"/></w:pPr>'
+                      + run(text) + "</w:p>")
         else:
-            ps.append('<w:p><w:pPr><w:spacing w:line="360" w:lineRule="auto"/>'
+            used_styles["Normal"] += 1
+            ps.append('<w:p><w:pPr><w:pStyle w:val="Normal"/>'
+                      '<w:spacing w:line="360" w:lineRule="auto"/>'
                       '<w:ind w:firstLineChars="200"/></w:pPr>' + run(text) + "</w:p>")
         emap.append({"claim_id": f"B{len(emap)+1}", "section": kind,
                      "paragraph_id": pid, "source_id": (p or {}).get("source_id", ""),
@@ -1328,19 +1367,32 @@ def _t_format_docx(case, paras, records, out_dir, input_dir) -> dict:
                 '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
                 '<w:body>' + "".join(ps) +
                 '<w:sectPr><w:pgSz w:w="11906" w:h="16838"/>'
+                '<w:pgSz w:w="11906" w:h="16838"/>'
                 '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>'
                 '</w:sectPr></w:body></w:document>')
+    style_defaults = {
+        "Heading1": ('<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/>'
+                     '<w:pPr><w:outlineLvl w:val="0"/></w:pPr>'
+                     '<w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>'),
+        "Heading2": ('<w:style w:type="paragraph" w:styleId="Heading2"><w:name w:val="heading 2"/>'
+                     '<w:pPr><w:outlineLvl w:val="1"/></w:pPr>'
+                     '<w:rPr><w:b/><w:sz w:val="28"/></w:rPr></w:style>'),
+        "Heading3": ('<w:style w:type="paragraph" w:styleId="Heading3"><w:name w:val="heading 3"/>'
+                     '<w:pPr><w:outlineLvl w:val="2"/></w:pPr>'
+                     '<w:rPr><w:b/><w:sz w:val="24"/></w:rPr></w:style>'),
+        "Caption": ('<w:style w:type="paragraph" w:styleId="Caption"><w:name w:val="caption"/>'
+                    '<w:pPr><w:jc w:val="center"/></w:pPr>'
+                    '<w:rPr><w:sz w:val="21"/></w:rPr></w:style>'),
+        "Normal": ('<w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/>'
+                   '<w:pPr><w:spacing w:line="360" w:lineRule="auto"/></w:pPr></w:style>'),
+    }
+    style_order = ["Heading1", "Heading2", "Heading3", "Caption", "Normal"]
     styles = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
               '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
               '<w:docDefaults><w:rPrDefault><w:rPr>'
               '<w:rFonts w:ascii="Times New Roman" w:eastAsia="宋体"/>'
               '<w:sz w:val="24"/></w:rPr></w:rPrDefault></w:docDefaults>'
-              '<w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/>'
-              '<w:pPr><w:outlineLvl w:val="0"/></w:pPr>'
-              '<w:rPr><w:b/><w:sz w:val="32"/></w:rPr></w:style>'
-              '<w:style w:type="paragraph" w:styleId="Normal"><w:name w:val="Normal"/>'
-              '<w:pPr><w:spacing w:line="360" w:lineRule="auto"/></w:pPr></w:style>'
-              '</w:styles>')
+              + "".join(style_defaults[k] for k in style_order) + '</w:styles>')
     content_types = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
                      '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
                      '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
@@ -1380,7 +1432,11 @@ def _t_format_docx(case, paras, records, out_dir, input_dir) -> dict:
                 "record", files)
     diff = {"before": {"format": "md", "blocks": len(body)},
             "after": {"format": "docx", "paragraphs": len(ps),
-                      "headings": sum(1 for k, _, _ in body if k == "h1")},
+                      "headings": sum(1 for k, _, _ in body if k.startswith("h")),
+                      "heading_levels": {lv: sum(1 for k, _, _ in body if k == lv)
+                                         for lv in ("h1", "h2", "h3")},
+                      "captions": sum(1 for k, _, _ in body if k == "cap"),
+                      "styles_used": used_styles},
             "content_preserved": len(body) == len(ps),
             "note": "转换后段数与原文块数一致；未删除任何正文块"}
     _write_json(out_dir, "conversion-diff.json", diff, "record", files)
@@ -1392,6 +1448,13 @@ def _t_format_docx(case, paras, records, out_dir, input_dir) -> dict:
         {"check_id": "content_preserved",
          "status": "pass" if diff["content_preserved"] else "fail",
          "detail": f"{len(body)} 个正文块全部进入 docx"},
+        {"check_id": "heading_levels_applied",
+         "status": "pass" if used_styles["Heading1"] else "review",
+         "detail": (f"Heading1 {used_styles['Heading1']} / Heading2 "
+                    f"{used_styles['Heading2']} / Heading3 {used_styles['Heading3']} 段")},
+        {"check_id": "caption_style_applied",
+         "status": "pass" if used_styles["Caption"] else "review",
+         "detail": f"题注段 {used_styles['Caption']} 个（居中、五号）"},
     ]
     changes = [{"change_id": "G001", "action": "convert_to_template_docx",
                 "detail": (f"把 {len(body)} 个正文块转换为 OOXML docx，套用宋体/Times 12pt、"
@@ -1782,6 +1845,26 @@ def _t_results_discussion(case, paras, records, out_dir, input_dir) -> dict:
         md.append("材料未给出可引用的数值结果（not_reported_in_materials）。\n")
     _write(out_dir, "results.md", "\n".join(md), "md", "deliverable", files)
 
+    # 数值结果表：只登记材料明写的数值+单位，逐条带段落锚点
+    trows = []
+    for it in res:
+        m = re.search(r"([-+]?\d+(?:\.\d+)?)\s*(%|％|ms|s|min|h|d|kg|g|mg|mL|L|mm|cm|m|"
+                      r"°C|K|Hz|kHz|MHz|nmol|µmol|μmol|mmol|mol|fold|倍|例|名|人|个)", it["text"])
+        if not m:
+            continue
+        pid = it.get("paragraph_id", "")
+        trows.append({"value": m.group(1), "unit": m.group(2),
+                      "statement": _quote(it["text"], 120),
+                      "paragraph_id": pid, "source_id": it.get("source_id", "")})
+    tbl = ["# 数值结果表", "",
+           "只登记材料明写的数值与单位；不含派生计算，空值不补。", "",
+           "| 数值 | 单位 | 陈述（逐字） | 段落 |", "|---|---|---|---|"]
+    for r in trows:
+        tbl.append(f"| {r['value']} | {r['unit']} | {r['statement']} | {r['paragraph_id']} |")
+    if not trows:
+        tbl.append("| — | — | 材料未给出可登记的数值结果（not_reported_in_materials） | — |")
+    _write(out_dir, "results-table.md", "\n".join(tbl) + "\n", "md", "deliverable", files)
+
     dd = ["# 讨论", "", "解释、对照、机制与局限均以材料陈述为界。", "", "## 解释", ""]
     if disc:
         dd += [p + "\n" for p in emit(disc[:6], "D", "解释")]
@@ -1843,11 +1926,14 @@ def _t_results_discussion(case, paras, records, out_dir, input_dir) -> dict:
                "status": "pass" if not _has_any(open(os.path.join(out_dir, "results.md"),
                                                      encoding="utf-8").read(),
                                                  ("我们认为", "可能", "推测", "暗示"))
-               else "fail", "detail": "results.md 不含解释性措辞"}]
+               else "fail", "detail": "results.md 不含解释性措辞"},
+              {"check_id": "numeric_table_anchored",
+               "status": "pass" if trows else "review",
+               "detail": f"数值表 {len(trows)} 行，均带段落号与逐字陈述"}]
     changes = [{"change_id": "G001", "action": "split_results_and_discussion",
                 "detail": (f"结果 {len(res)} 句、讨论 {len(disc)} 句分栏，"
                            f"{len(pairing)} 组图表配对，{len(causal)} 条因果表述经守卫检查"),
-                "files": ["results.md", "discussion.md", "pairing.json",
+                "files": ["results.md", "results-table.md", "discussion.md", "pairing.json",
                           "causality-guard.json"], "rejected_entries": 0}]
     answers = [{"question_id": "Q1", "question": "结果与讨论是否分离且图表配对",
                 "answer": f"results.md 只陈述发现；discussion.md 按解释/对照/机制/局限分节；"
@@ -2002,6 +2088,19 @@ def _t_latex(case, paras, records, out_dir, input_dir) -> dict:
 
     sec_files = []
     para_index = _sentence_index(paras)
+    bib_keys = [b["key"] for b in bib]
+    cited = []
+
+    def cite_sentence(s):
+        def repl(m):
+            i = int(m.group(1)) - 1
+            if 0 <= i < len(bib_keys):
+                if bib_keys[i] not in cited:
+                    cited.append(bib_keys[i])
+                return r"\cite{" + bib_keys[i] + "}"
+            return m.group(0)
+        return re.sub(r"[\[［]\s*(\d+)\s*[\]］]", repl, s)
+
     for n, ch in enumerate(chapters, 1):
         body = []
         for s in _sentences(ch["text"]):
@@ -2009,12 +2108,26 @@ def _t_latex(case, paras, records, out_dir, input_dir) -> dict:
             emap.append({"claim_id": f"S{n}", "section": ch["title"],
                          "paragraph_id": a["paragraph_id"],
                          "source_id": a["source_id"], "quote": a["quote"]})
-            body.append(tex_escape(s))
+            body.append(cite_sentence(tex_escape(s)))
         rel = f"sections/sec-{n:02d}.tex"
         content = ("% " + tex_escape(ch["title"]) + "\n" +
-                   "\n\n".join(body) + "\n")
+                   "\n\n".join(body) + "\n" +
+                   f"\\label{{sec:{n}}}\n")
         _write(out_dir, rel, content, "tex", "deliverable", files)
         sec_files.append({"index": n, "title": ch["title"], "file": rel})
+
+    # 摘要与关键词：优先取材料中的「摘要 / Abstract / 关键词」段
+    abstract = ""
+    keywords = ""
+    for p in paras:
+        t = (p.get("text") or "").strip()
+        if not abstract and re.match(r"^(#+\s*)?(摘要|Abstract)\s*[:：]?", t, re.I):
+            abstract = re.sub(r"^(#+\s*)?(摘要|Abstract)\s*[:：]?\s*", "", t).strip()
+        if not keywords and re.match(r"^(#+\s*)?(关键词|Keywords)\s*[:：]?", t, re.I):
+            keywords = re.sub(r"^(#+\s*)?(关键词|Keywords)\s*[:：]?\s*", "", t).strip()
+    if not abstract:
+        abstract = _quote(chapters[0]["text"], 300) if chapters else \
+            "材料未提供摘要内容（not_reported_in_materials）。"
 
     docclass = r"\documentclass[UTF8,a4paper,12pt]{ctexart}" if zh else \
         r"\documentclass[12pt]{article}"
@@ -2030,11 +2143,12 @@ def _t_latex(case, paras, records, out_dir, input_dir) -> dict:
         r"\begin{document}",
         r"\maketitle",
         r"\begin{abstract}",
-        tex_escape(_quote(chapters[0]["text"], 300) if chapters else
-                   "材料未提供摘要内容。"),
+        tex_escape(abstract),
         r"\end{abstract}",
-        r"\tableofcontents",
     ]
+    if keywords:
+        main.append(r"\noindent\textbf{关键词：}" + tex_escape(keywords) + r"\\")
+    main.append(r"\tableofcontents")
     for s in sec_files:
         main.append(f"\\section{{{tex_escape(s['title'])}}}")
         main.append(f"\\input{{{s['file'].replace('.tex', '')}}}")
@@ -2088,6 +2202,8 @@ def _t_latex(case, paras, records, out_dir, input_dir) -> dict:
                 {"document_class": docclass, "packages": ["amsmath", "graphicx",
                                                           "booktabs", "hyperref", "natbib"],
                  "sections": sec_files, "bib_entries": len(bib),
+                 "cited_keys": cited, "labels": [f"sec:{s['index']}" for s in sec_files],
+                 "keywords_reported": bool(keywords),
                  "main": "main.tex"}, "record", files)
     checks = [{"check_id": "tex_files_present",
                "status": "pass" if all(os.path.isfile(
@@ -2099,7 +2215,14 @@ def _t_latex(case, paras, records, out_dir, input_dir) -> dict:
                "detail": "PDF 已生成" if ok else status["note"]},
               {"check_id": "bib_no_fabrication",
                "status": "pass" if len(bib) == len(_bib_from_material(paras)) else "fail",
-               "detail": f"{len(bib)} 条文献全部来自材料参考文献表"}]
+               "detail": f"{len(bib)} 条文献全部来自材料参考文献表"},
+              {"check_id": "citations_wired",
+               "status": ("pass" if cited else ("review" if bib else "pass")),
+               "detail": (f"{len(cited)}/{len(bib)} 条 bib 条目被 \\cite 引用"
+                          if bib else "材料无参考文献表，未生成 \\cite")},
+              {"check_id": "crossref_labels",
+               "status": "pass" if len(sec_files) > 1 else "review",
+               "detail": f"{len(sec_files)} 个 \\label{{sec:n}} 交叉引用锚点"}]
     changes = [{"change_id": "G001", "action": "build_latex_project",
                 "detail": (f"生成 {len(sec_files)} 节 ctex 工程 + {len(bib)} 条 bib 条目，"
                            f"编译引擎：{engine or '无'}"),
